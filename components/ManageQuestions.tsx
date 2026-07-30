@@ -241,9 +241,16 @@ const MatrixRow = ({ data, allQuestions, onUpdate, onRemove }: any) => {
 
 // --- RANDOM MODAL ---
 const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
-  const [activeTab, setActiveTab] = useState<'MATRIX' | 'SMART'>('MATRIX');
+  const [activeTab, setActiveTab] = useState<'MATRIX' | 'SMART'>('SMART');
   const [rows, setRows] = useState<any[]>([{ id: '1', grade: 'ALL', subject: 'ALL', chapter: 'ALL', lesson: 'ALL', form: 'ALL', type: 'ALL', level: 'ALL', neededCount: 0 }]);
   
+  interface LevelCounts {
+    N: number;
+    H: number;
+    V: number;
+    C: number;
+  }
+
   interface SmartPickConfig {
     grade: string;
     subject: string;
@@ -251,23 +258,44 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
     lesson: string;
     selectedTypes: { C: boolean; F: boolean; T: boolean };
     targets: { C: number; F: number; T: number };
+    useCustomLevels: boolean;
+    customLevelTargets: {
+      C: LevelCounts;
+      F: LevelCounts;
+      T: LevelCounts;
+    };
   }
 
   const [smartConfig, setSmartConfig] = useState<SmartPickConfig>(() => {
-    const saved = localStorage.getItem('smartPickConfig_v2');
+    const saved = localStorage.getItem('smartPickConfig_v3');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+      try { 
+        const parsed = JSON.parse(saved); 
+        return {
+          useCustomLevels: false,
+          customLevelTargets: {
+            C: { N: 6, H: 6, V: 4, C: 4 },
+            F: { N: 3, H: 3, V: 2, C: 2 },
+            T: { N: 6, H: 6, V: 4, C: 4 }
+          },
+          ...parsed
+        };
+      } catch (e) { console.error(e); }
     }
     return { 
       grade: '10', subject: 'D', chapter: '1', lesson: '1', 
       selectedTypes: { C: true, F: true, T: true },
-      targets: { C: 20, F: 10, T: 20 }
+      targets: { C: 20, F: 10, T: 20 },
+      useCustomLevels: false,
+      customLevelTargets: {
+        C: { N: 6, H: 6, V: 4, C: 4 },
+        F: { N: 3, H: 3, V: 2, C: 2 },
+        T: { N: 6, H: 6, V: 4, C: 4 }
+      }
     };
   });
 
   const bankIndex = useMemo(() => {
-    // Broaden the type of index to any to avoid "unknown" index type errors in strict environments 
-    // and to handle inconsistent data structures for different keys (e.g., summary stats vs detailed lessons).
     const index: any = {};
     questions.forEach((q: Question) => {
       const g = q.meta.grade === '0' ? '10' : q.meta.grade === '1' ? '11' : q.meta.grade === '2' ? '12' : q.meta.grade;
@@ -288,7 +316,6 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
       index[key].lessons[c].add(l);
       index[key][q.type as QuestionType]++;
       index[key].total++;
-      // redundant casts removed as index is now any
       index[lessonKey][q.type as QuestionType]++;
       index[lessonKey].total++;
     });
@@ -317,11 +344,47 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
     return result.sort((a, b) => parseInt(a.code) - parseInt(b.code));
   }, [bankIndex, smartConfig.grade, smartConfig.subject, smartConfig.chapter, dynamicChapters]);
 
+  // Statistics for currently selected Grade, Subject, Chapter, Lesson
+  const lessonPool = useMemo(() => {
+    const targetGradeCode = GRADE_TO_CODE[smartConfig.grade];
+    return questions.filter((q: Question) => 
+      q.meta.grade === targetGradeCode &&
+      q.meta.subject === smartConfig.subject &&
+      q.meta.chapter === smartConfig.chapter &&
+      q.meta.lesson === smartConfig.lesson
+    );
+  }, [questions, smartConfig.grade, smartConfig.subject, smartConfig.chapter, smartConfig.lesson]);
+
   const availableStats = useMemo(() => {
-    const key = `${smartConfig.grade}-${smartConfig.subject}-${smartConfig.chapter}-${smartConfig.lesson}`;
-    const stats = bankIndex[key] || { C: 0, F: 0, T: 0 };
+    const stats = {
+      C: { total: 0, N: 0, H: 0, V: 0, C: 0, forms: new Set<string>() },
+      F: { total: 0, N: 0, H: 0, V: 0, C: 0, forms: new Set<string>() },
+      T: { total: 0, N: 0, H: 0, V: 0, C: 0, forms: new Set<string>() },
+      totalForms: new Set<string>()
+    };
+
+    lessonPool.forEach((q: Question) => {
+      const type = q.type as keyof typeof stats;
+      if (stats[type]) {
+        stats[type].total++;
+        let lv = q.level;
+        if (lv === '1') lv = 'N';
+        if (lv === '2') lv = 'H';
+        if (lv === '3') lv = 'V';
+        if (lv === '4') lv = 'C';
+        
+        if (lv === 'N' || lv === 'H' || lv === 'V' || lv === 'C') {
+          stats[type][lv]++;
+        }
+        if (q.meta.form) {
+          stats[type].forms.add(q.meta.form);
+          stats.totalForms.add(q.meta.form);
+        }
+      }
+    });
+
     return stats;
-  }, [bankIndex, smartConfig.grade, smartConfig.subject, smartConfig.chapter, smartConfig.lesson]);
+  }, [lessonPool]);
 
   const updateSmartConfig = (updates: Partial<SmartPickConfig>) => {
     setSmartConfig(prev => {
@@ -336,7 +399,7 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
         const currentChapter = dynamicChapters.find(c => c.code === next.chapter);
         next.lesson = currentChapter?.lessons[0]?.code || '1';
       }
-      localStorage.setItem('smartPickConfig_v2', JSON.stringify(next));
+      localStorage.setItem('smartPickConfig_v3', JSON.stringify(next));
       return next;
     });
   };
@@ -349,11 +412,6 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
   const updateRow = (id: string, newData: any) => setRows(rows.map(r => r.id === id ? { ...r, ...newData } : r));
   const removeRow = (id: string) => rows.length > 1 && setRows(rows.filter(r => r.id !== id));
 
-  /**
-   * Logic bốc thông minh v3.0:
-   * 1. Phân bổ tỉ lệ Mức độ: Nhận biết (30%), Thông hiểu (30%), Vận dụng (20%), Vận dụng cao (20%) -> 3:3:2:2.
-   * 2. Nguyên tắc phủ Dạng bài: Với mỗi Mức độ, xoay vòng qua các Dạng bài (Form) để bốc đều.
-   */
   const handleSmartExecute = () => {
     const activeTypes = (Object.entries(smartConfig.selectedTypes)
       .filter(([_, val]) => val)
@@ -369,19 +427,28 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
     const usedUids = new Set<string>();
 
     activeTypes.forEach(type => {
-      const typeTargetTotal = smartConfig.targets[type as keyof typeof smartConfig.targets] || 0;
-      if (typeTargetTotal <= 0) return;
+      let levelTargets: Record<LevelCode, number>;
 
-      // 1. Tính toán số lượng cần cho mỗi mức độ theo tỉ lệ 3:3:2:2
-      const levelTargets: Record<LevelCode, number> = {
-        'N': Math.round(typeTargetTotal * 0.3),
-        'H': Math.round(typeTargetTotal * 0.3),
-        'V': Math.round(typeTargetTotal * 0.2),
-        'C': 0 // Sẽ tính phần còn lại để đảm bảo tổng khớp
-      };
-      levelTargets.C = typeTargetTotal - (levelTargets.N + levelTargets.H + levelTargets.V);
+      if (smartConfig.useCustomLevels) {
+        const customLT = smartConfig.customLevelTargets[type] || { N: 0, H: 0, V: 0, C: 0 };
+        levelTargets = {
+          'N': Math.max(0, customLT.N || 0),
+          'H': Math.max(0, customLT.H || 0),
+          'V': Math.max(0, customLT.V || 0),
+          'C': Math.max(0, customLT.C || 0)
+        };
+      } else {
+        const typeTargetTotal = smartConfig.targets[type] || 0;
+        if (typeTargetTotal <= 0) return;
+        levelTargets = {
+          'N': Math.round(typeTargetTotal * 0.3),
+          'H': Math.round(typeTargetTotal * 0.3),
+          'V': Math.round(typeTargetTotal * 0.2),
+          'C': 0
+        };
+        levelTargets.C = Math.max(0, typeTargetTotal - (levelTargets.N + levelTargets.H + levelTargets.V));
+      }
 
-      // 2. Lấy pool câu hỏi theo Loại, Khối, Môn, Chương, Bài
       const typePool = questions.filter((q: Question) => 
         q.meta.grade === targetGradeCode &&
         q.meta.subject === smartConfig.subject &&
@@ -392,29 +459,34 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
 
       if (typePool.length === 0) return;
 
-      // 3. Thực hiện bốc cho từng mức độ
       const levels: LevelCode[] = ['N', 'H', 'V', 'C'];
       
       levels.forEach(lv => {
         const targetForLevel = levelTargets[lv];
         if (targetForLevel <= 0) return;
 
-        // Lọc pool cho mức độ này
-        const levelPool = typePool.filter(q => q.level === lv);
+        const levelPool = typePool.filter(q => {
+          let qLv = q.level;
+          if (qLv === '1') qLv = 'N';
+          if (qLv === '2') qLv = 'H';
+          if (qLv === '3') qLv = 'V';
+          if (qLv === '4') qLv = 'C';
+          return qLv === lv && !usedUids.has(q.uid);
+        });
+
         if (levelPool.length === 0) return;
 
-        // Tìm danh sách các Dạng bài hiện có trong pool mức độ này
-        const availableForms = Array.from(new Set(levelPool.map(q => q.meta.form))).sort();
+        // Group levelPool by form (dạng bài) to ensure round-robin distribution (phủ rộng các dạng bài)
+        const availableForms = Array.from(new Set(levelPool.map(q => q.meta.form || '1'))).sort();
         
-        // Phân bổ lượt bốc đều qua các dạng bài (Round-robin)
-        let levelPickedCount = 0;
-        let formIndex = 0;
-        
-        // Nhóm câu hỏi theo dạng bài để bốc cho nhanh
+        // Shuffle questions within each form group for randomness
         const formGroups: Record<string, Question[]> = {};
         availableForms.forEach(f => {
-          formGroups[f] = levelPool.filter(q => q.meta.form === f).sort(() => Math.random() - 0.5);
+          formGroups[f] = levelPool.filter(q => (q.meta.form || '1') === f).sort(() => Math.random() - 0.5);
         });
+
+        let levelPickedCount = 0;
+        let formIndex = 0;
 
         while (levelPickedCount < targetForLevel) {
           let progressInRound = false;
@@ -423,18 +495,18 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
             const currentForm = availableForms[(formIndex + i) % availableForms.length];
             const group = formGroups[currentForm];
             
-            // Tìm câu hỏi chưa dùng trong group này
-            const firstAvailable = group.find(q => !usedUids.has(q.uid));
-            if (firstAvailable) {
-              finalSelected.push(firstAvailable);
-              usedUids.add(firstAvailable.uid);
+            const nextQIndex = group.findIndex(q => !usedUids.has(q.uid));
+            if (nextQIndex !== -1) {
+              const picked = group.splice(nextQIndex, 1)[0];
+              finalSelected.push(picked);
+              usedUids.add(picked.uid);
               levelPickedCount++;
               progressInRound = true;
               if (levelPickedCount >= targetForLevel) break;
             }
           }
           
-          if (!progressInRound) break; // Hết câu hỏi trong pool mức độ này
+          if (!progressInRound) break; // Exhausted available pool for this level
           formIndex = (formIndex + 1) % availableForms.length;
         }
       });
@@ -492,182 +564,344 @@ const RandomSelectionModal = ({ questions, onClose, onConfirm }: any) => {
     onConfirm(finalQuestions);
   };
 
+  const typeMapInfo = [
+    { key: 'C', name: 'Trắc nghiệm', available: availableStats.C },
+    { key: 'F', name: 'Đúng / Sai', available: availableStats.F },
+    { key: 'T', name: 'Tự luận / Trả lời ngắn', available: availableStats.T }
+  ] as const;
+
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-300">
-      <div className="bg-[#1e293b] border border-slate-700 w-full max-w-[1400px] rounded-[32px] shadow-[0_0_60px_rgba(0,0,0,0.6)] flex flex-col h-[85vh] overflow-hidden">
-        <div className="px-8 py-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
-          <div className="flex items-center gap-6">
-            <h2 className="text-sm font-black uppercase text-white tracking-[0.2em] flex items-center gap-3">
-              <div className="p-2 bg-indigo-500/20 rounded-lg"><Dices size={24} className="text-indigo-400"/></div>
-              Bốc câu hỏi tự động
-            </h2>
-            <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800">
-              <button onClick={() => setActiveTab('MATRIX')} className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'MATRIX' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}>Ma trận tùy chỉnh</button>
-              <button onClick={() => setActiveTab('SMART')} className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${activeTab === 'SMART' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}><Wand2 size={14}/> Bốc theo bài học (Tỉ lệ 3:3:2:2)</button>
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/90 backdrop-blur-md p-3 sm:p-4 animate-in fade-in duration-200">
+      <div className="bg-[#1e293b] border border-slate-700/80 w-full max-w-5xl rounded-3xl shadow-2xl flex flex-col max-h-[92vh] h-auto overflow-hidden">
+        
+        {/* Modal Header */}
+        <div className="px-5 py-3.5 border-b border-slate-700/80 flex flex-wrap items-center justify-between gap-3 bg-slate-800/80">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-indigo-500/20 rounded-lg text-indigo-400">
+                <Dices size={20} />
+              </div>
+              <h2 className="text-xs sm:text-sm font-black uppercase text-white tracking-wider">
+                Bốc câu hỏi tự động
+              </h2>
+            </div>
+            
+            <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button 
+                onClick={() => setActiveTab('SMART')} 
+                className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 ${activeTab === 'SMART' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                <Wand2 size={13}/> Bốc theo bài học
+              </button>
+              <button 
+                onClick={() => setActiveTab('MATRIX')} 
+                className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${activeTab === 'MATRIX' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                Ma trận tùy chỉnh
+              </button>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full transition-all text-slate-400 hover:text-white">
-            <X size={28}/>
+
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-700 rounded-full transition-all text-slate-400 hover:text-white">
+            <X size={22}/>
           </button>
         </div>
         
-        <div className="flex-1 overflow-auto p-8 custom-scrollbar">
+        {/* Modal Body */}
+        <div className="flex-1 overflow-auto p-4 sm:p-5 custom-scrollbar space-y-4">
           {activeTab === 'MATRIX' ? (
-            <>
-              <table className="w-full text-left text-[11px] border-separate border-spacing-y-2">
+            <div className="space-y-4">
+              <table className="w-full text-left text-[11px] border-separate border-spacing-y-1.5">
                 <thead className="sticky top-0 bg-[#1e293b] z-20">
-                  <tr className="text-slate-500 uppercase font-black tracking-widest">
-                    <th className="p-2 pb-4">Lớp</th>
-                    <th className="p-2 pb-4">Môn</th>
-                    <th className="p-2 pb-4">Chương</th>
-                    <th className="p-2 pb-4">Bài</th>
-                    <th className="p-2 pb-4">Dạng</th>
-                    <th className="p-2 pb-4">Mức</th>
-                    <th className="p-2 pb-4">Loại</th>
-                    <th className="p-2 pb-4 text-center">Có</th>
-                    <th className="p-2 pb-4 text-center">Lấy</th>
-                    <th className="p-2 pb-4 text-center">Xóa</th>
+                  <tr className="text-slate-400 uppercase font-black tracking-wider text-[10px]">
+                    <th className="p-2 pb-2">Lớp</th>
+                    <th className="p-2 pb-2">Môn</th>
+                    <th className="p-2 pb-2">Chương</th>
+                    <th className="p-2 pb-2">Bài</th>
+                    <th className="p-2 pb-2">Dạng</th>
+                    <th className="p-2 pb-2">Mức</th>
+                    <th className="p-2 pb-2">Loại</th>
+                    <th className="p-2 pb-2 text-center">Có</th>
+                    <th className="p-2 pb-2 text-center">Lấy</th>
+                    <th className="p-2 pb-2 text-center">Xóa</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map(row => <MatrixRow key={row.id} data={row} allQuestions={questions} onUpdate={updateRow} onRemove={removeRow} />)}
                 </tbody>
               </table>
-              <button onClick={addRow} className="mt-8 w-full h-16 border-2 border-dashed border-slate-700 hover:border-indigo-500/50 hover:bg-indigo-500/5 text-slate-500 hover:text-indigo-400 rounded-3xl flex items-center justify-center gap-4 font-black uppercase text-[11px] tracking-widest transition-all group">
-                <PlusCircle size={24} className="group-hover:scale-110 transition-transform"/> Thêm dòng cấu hình mới
+              <button onClick={addRow} className="w-full h-11 border border-dashed border-slate-700 hover:border-indigo-500/50 hover:bg-indigo-500/5 text-slate-400 hover:text-indigo-400 rounded-xl flex items-center justify-center gap-2 font-black uppercase text-[10px] tracking-wider transition-all group">
+                <PlusCircle size={18} className="group-hover:scale-110 transition-transform"/> Thêm dòng cấu hình
               </button>
-            </>
+            </div>
           ) : (
-            <div className="max-w-5xl mx-auto space-y-10 py-6">
-               <div className="text-center space-y-2">
-                 <h3 className="text-3xl font-black text-white">Bốc theo bài học: Tỉ lệ 3:3:2:2 & Phủ Dạng</h3>
-                 <p className="text-slate-400 text-xs italic uppercase tracking-[0.1em]">Tỉ lệ mức độ N-H-V-C cố định 30%-30%-20%-20%. Với mỗi mức độ, hệ thống sẽ bốc xoay vòng qua tất cả các dạng bài hiện có.</p>
-               </div>
-               
-               <div className="grid grid-cols-2 md:grid-cols-4 gap-6 bg-slate-900/30 p-8 rounded-[40px] border border-slate-800">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-500 uppercase ml-2 tracking-widest">Khối lớp</label>
-                    <select value={smartConfig.grade} onChange={e => updateSmartConfig({grade: e.target.value})} className="w-full h-12 bg-slate-950 border border-slate-700 rounded-2xl px-4 text-white font-bold outline-none focus:border-indigo-500 text-xs shadow-inner">
+            <div className="space-y-4">
+              
+              {/* Scope Selection: Grade, Subject, Chapter, Lesson */}
+              <div className="bg-slate-900/60 p-3.5 rounded-2xl border border-slate-800/90 space-y-2.5">
+                <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                  <ListFilter size={14} className="text-indigo-400" /> Chọn phạm vi bài học
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Khối lớp</label>
+                    <select value={smartConfig.grade} onChange={e => updateSmartConfig({grade: e.target.value})} className="w-full h-9 bg-slate-950 border border-slate-700/80 rounded-xl px-2.5 text-white font-bold outline-none focus:border-indigo-500 text-xs shadow-inner">
                       {Object.entries(GRADE_MAP).map(([k, v]) => <option key={k} value={k === '0' ? '10' : k === '1' ? '11' : k === '2' ? '12' : k}>{v}</option>)}
                     </select>
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-500 uppercase ml-2 tracking-widest">Phân môn</label>
-                    <select value={smartConfig.subject} onChange={e => updateSmartConfig({subject: e.target.value})} className="w-full h-12 bg-slate-950 border border-slate-700 rounded-2xl px-4 text-white font-bold outline-none focus:border-indigo-500 text-xs shadow-inner">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Phân môn</label>
+                    <select value={smartConfig.subject} onChange={e => updateSmartConfig({subject: e.target.value})} className="w-full h-9 bg-slate-950 border border-slate-700/80 rounded-xl px-2.5 text-white font-bold outline-none focus:border-indigo-500 text-xs shadow-inner">
                       {Object.entries(SUBJECT_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
                   </div>
-                  <div className="space-y-2 col-span-2">
-                    <label className="text-[10px] font-black text-slate-500 uppercase ml-2 tracking-widest">Chương học</label>
-                    <select value={smartConfig.chapter} onChange={e => updateSmartConfig({chapter: e.target.value})} className="w-full h-12 bg-slate-950 border border-slate-700 rounded-2xl px-4 text-white font-bold outline-none focus:border-indigo-500 truncate text-xs shadow-inner">
+                  <div className="space-y-1 col-span-2 md:col-span-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Chương học</label>
+                    <select value={smartConfig.chapter} onChange={e => updateSmartConfig({chapter: e.target.value})} className="w-full h-9 bg-slate-950 border border-slate-700/80 rounded-xl px-2.5 text-white font-bold outline-none focus:border-indigo-500 truncate text-xs shadow-inner">
                       {dynamicChapters.map(c => <option key={c.code} value={c.code}>{c.title}</option>)}
                     </select>
                   </div>
-                  <div className="space-y-2 col-span-4">
-                    <label className="text-[10px] font-black text-slate-500 uppercase ml-2 tracking-widest">Bài học</label>
-                    <select value={smartConfig.lesson} onChange={e => updateSmartConfig({lesson: e.target.value})} className="w-full h-12 bg-slate-950 border border-slate-700 rounded-2xl px-4 text-white font-bold outline-none focus:border-indigo-500 truncate text-xs shadow-inner">
+                  <div className="space-y-1 col-span-2 md:col-span-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Bài học</label>
+                    <select value={smartConfig.lesson} onChange={e => updateSmartConfig({lesson: e.target.value})} className="w-full h-9 bg-slate-950 border border-slate-700/80 rounded-xl px-2.5 text-white font-bold outline-none focus:border-indigo-500 truncate text-xs shadow-inner">
                       {dynamicLessons.map(l => <option key={l.code} value={l.code}>{l.title}</option>)}
                     </select>
                   </div>
-               </div>
+                </div>
+              </div>
 
-               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className={`p-6 rounded-[32px] border-2 transition-all ${smartConfig.selectedTypes.C ? 'bg-emerald-500/5 border-emerald-500/40' : 'bg-slate-900/50 border-slate-800 opacity-50'}`}>
-                    <div className="flex items-center justify-between mb-6">
-                      <div className="flex items-center gap-3">
-                        <input type="checkbox" id="check-c" checked={smartConfig.selectedTypes.C} onChange={e => updateSmartConfig({selectedTypes: {...smartConfig.selectedTypes, C: e.target.checked}})} className="w-5 h-5 rounded-lg accent-emerald-500 cursor-pointer" />
-                        <label htmlFor="check-c" className="text-xs font-black text-white uppercase tracking-widest cursor-pointer">Trắc nghiệm</label>
+              {/* Mode Toggle: Auto 3:3:2:2 vs Custom Level Counts */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-900/60 p-3 rounded-2xl border border-slate-800">
+                <div className="flex items-center gap-2 text-xs font-black text-slate-200">
+                  <Zap size={16} className="text-amber-400" />
+                  <span>Chế độ phân bổ Mức độ câu hỏi:</span>
+                </div>
+                <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button 
+                    onClick={() => updateSmartConfig({ useCustomLevels: false })}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${!smartConfig.useCustomLevels ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    ⚡ Tỉ lệ 3:3:2:2 Tự động
+                  </button>
+                  <button 
+                    onClick={() => updateSmartConfig({ useCustomLevels: true })}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${smartConfig.useCustomLevels ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    ⚙️ Tùy chỉnh số câu NB - TH - VD - VDC
+                  </button>
+                </div>
+              </div>
+
+              {/* Cards for Question Types (Trắc nghiệm, Đúng/Sai, Tự luận) */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {typeMapInfo.map(tInfo => {
+                  const typeKey = tInfo.key as QuestionType;
+                  const isChecked = smartConfig.selectedTypes[typeKey];
+                  const totalInBank = tInfo.available.total;
+                  
+                  return (
+                    <div 
+                      key={typeKey} 
+                      className={`p-3.5 rounded-2xl border transition-all ${
+                        isChecked 
+                          ? 'bg-slate-900/80 border-indigo-500/50 shadow-lg' 
+                          : 'bg-slate-950/40 border-slate-800/80 opacity-60'
+                      }`}
+                    >
+                      {/* Card Header */}
+                      <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/80">
+                        <div className="flex items-center gap-2">
+                          <input 
+                            type="checkbox" 
+                            id={`check-${typeKey}`} 
+                            checked={isChecked} 
+                            onChange={e => updateSmartConfig({
+                              selectedTypes: { ...smartConfig.selectedTypes, [typeKey]: e.target.checked }
+                            })} 
+                            className="w-4 h-4 rounded accent-indigo-500 cursor-pointer" 
+                          />
+                          <label htmlFor={`check-${typeKey}`} className="text-xs font-black text-white uppercase tracking-wider cursor-pointer">
+                            {tInfo.name}
+                          </label>
+                        </div>
+                        <span className="px-2 py-0.5 bg-slate-950 rounded-md border border-slate-800 text-[9px] font-black text-slate-400">
+                          Kho: {totalInBank}
+                        </span>
                       </div>
-                      <div className="px-3 py-1 bg-slate-950 rounded-full border border-slate-800 text-[9px] font-black text-slate-500 uppercase">Kho: {availableStats.C}</div>
-                    </div>
-                    <div className="relative group">
-                      <div className="absolute -left-3 top-1/2 -translate-y-1/2 text-emerald-500/20 group-hover:text-emerald-500/40 transition-colors"><Target size={40}/></div>
-                      <input 
-                        type="number" 
-                        disabled={!smartConfig.selectedTypes.C}
-                        value={smartConfig.targets.C} 
-                        onChange={e => updateSmartConfig({targets: {...smartConfig.targets, C: parseInt(e.target.value) || 0}})}
-                        className="w-full h-16 bg-slate-950 border-2 border-slate-800 rounded-2xl px-6 text-2xl font-black text-emerald-400 outline-none focus:border-emerald-500/50 transition-all text-center shadow-2xl"
-                      />
-                    </div>
-                  </div>
 
-                  <div className={`p-6 rounded-[32px] border-2 transition-all ${smartConfig.selectedTypes.F ? 'bg-amber-500/5 border-amber-500/40' : 'bg-slate-900/50 border-slate-800 opacity-50'}`}>
-                    <div className="flex items-center justify-between mb-6">
-                      <div className="flex items-center gap-3">
-                        <input type="checkbox" id="check-f" checked={smartConfig.selectedTypes.F} onChange={e => updateSmartConfig({selectedTypes: {...smartConfig.selectedTypes, F: e.target.checked}})} className="w-5 h-5 rounded-lg accent-amber-500 cursor-pointer" />
-                        <label htmlFor="check-f" className="text-xs font-black text-white uppercase tracking-widest cursor-pointer">Đúng / Sai</label>
-                      </div>
-                      <div className="px-3 py-1 bg-slate-950 rounded-full border border-slate-800 text-[9px] font-black text-slate-500 uppercase">Kho: {availableStats.F}</div>
-                    </div>
-                    <div className="relative group">
-                      <div className="absolute -left-3 top-1/2 -translate-y-1/2 text-amber-500/20 group-hover:text-amber-500/40 transition-colors"><Target size={40}/></div>
-                      <input 
-                        type="number" 
-                        disabled={!smartConfig.selectedTypes.F}
-                        value={smartConfig.targets.F} 
-                        onChange={e => updateSmartConfig({targets: {...smartConfig.targets, F: parseInt(e.target.value) || 0}})}
-                        className="w-full h-16 bg-slate-950 border-2 border-slate-800 rounded-2xl px-6 text-2xl font-black text-amber-400 outline-none focus:border-amber-500/50 transition-all text-center shadow-2xl"
-                      />
-                    </div>
-                  </div>
+                      {/* Input fields based on useCustomLevels toggle */}
+                      {!smartConfig.useCustomLevels ? (
+                        <div className="space-y-2">
+                          <label className="text-[9px] font-bold text-slate-400 uppercase">Tổng số câu cần bốc</label>
+                          <div className="relative">
+                            <input 
+                              type="number" 
+                              disabled={!isChecked}
+                              min="0"
+                              max={totalInBank}
+                              value={smartConfig.targets[typeKey]} 
+                              onChange={e => updateSmartConfig({
+                                targets: { ...smartConfig.targets, [typeKey]: parseInt(e.target.value) || 0 }
+                              })}
+                              className="w-full h-11 bg-slate-950 border border-slate-700/80 rounded-xl px-4 text-lg font-black text-indigo-400 outline-none focus:border-indigo-500 text-center shadow-inner"
+                            />
+                          </div>
+                          
+                          {/* Calculated 3:3:2:2 Preview */}
+                          {isChecked && (
+                            <div className="text-[9px] text-slate-400 font-bold bg-slate-950/80 p-2 rounded-lg border border-slate-800/80 text-center space-x-1.5">
+                              <span className="text-blue-400">NB: {Math.round((smartConfig.targets[typeKey] || 0) * 0.3)}</span>
+                              <span>•</span>
+                              <span className="text-emerald-400">TH: {Math.round((smartConfig.targets[typeKey] || 0) * 0.3)}</span>
+                              <span>•</span>
+                              <span className="text-amber-400">VD: {Math.round((smartConfig.targets[typeKey] || 0) * 0.2)}</span>
+                              <span>•</span>
+                              <span className="text-rose-400">VDC: {Math.max(0, (smartConfig.targets[typeKey] || 0) - Math.round((smartConfig.targets[typeKey] || 0)*0.3)*2 - Math.round((smartConfig.targets[typeKey] || 0)*0.2))}</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-2 gap-2">
+                            {/* NB */}
+                            <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 space-y-1">
+                              <div className="flex justify-between items-center text-[9px]">
+                                <span className="font-black text-blue-400 uppercase">1. NB</span>
+                                <span className="text-slate-500 font-semibold">Kho:{tInfo.available.N}</span>
+                              </div>
+                              <input 
+                                type="number" 
+                                disabled={!isChecked}
+                                min="0"
+                                max={tInfo.available.N}
+                                value={smartConfig.customLevelTargets[typeKey]?.N ?? 0}
+                                onChange={e => updateSmartConfig({
+                                  customLevelTargets: {
+                                    ...smartConfig.customLevelTargets,
+                                    [typeKey]: { ...smartConfig.customLevelTargets[typeKey], N: parseInt(e.target.value) || 0 }
+                                  }
+                                })}
+                                className="w-full h-8 bg-slate-900 border border-slate-700/60 rounded-lg text-center text-xs font-black text-white outline-none focus:border-indigo-500"
+                              />
+                            </div>
 
-                  <div className={`p-6 rounded-[32px] border-2 transition-all ${smartConfig.selectedTypes.T ? 'bg-purple-500/5 border-purple-500/40' : 'bg-slate-900/50 border-slate-800 opacity-50'}`}>
-                    <div className="flex items-center justify-between mb-6">
-                      <div className="flex items-center gap-3">
-                        <input type="checkbox" id="check-t" checked={smartConfig.selectedTypes.T} onChange={e => updateSmartConfig({selectedTypes: {...smartConfig.selectedTypes, T: e.target.checked}})} className="w-5 h-5 rounded-lg accent-purple-500 cursor-pointer" />
-                        <label htmlFor="check-t" className="text-xs font-black text-white uppercase tracking-widest cursor-pointer">Tự luận</label>
-                      </div>
-                      <div className="px-3 py-1 bg-slate-950 rounded-full border border-slate-800 text-[9px] font-black text-slate-500 uppercase">Kho: {availableStats.T}</div>
-                    </div>
-                    <div className="relative group">
-                      <div className="absolute -left-3 top-1/2 -translate-y-1/2 text-purple-500/20 group-hover:text-purple-500/40 transition-colors"><Target size={40}/></div>
-                      <input 
-                        type="number" 
-                        disabled={!smartConfig.selectedTypes.T}
-                        value={smartConfig.targets.T} 
-                        onChange={e => updateSmartConfig({targets: {...smartConfig.targets, T: parseInt(e.target.value) || 0}})}
-                        className="w-full h-16 bg-slate-950 border-2 border-slate-800 rounded-2xl px-6 text-2xl font-black text-purple-400 outline-none focus:border-purple-500/50 transition-all text-center shadow-2xl"
-                      />
-                    </div>
-                  </div>
-               </div>
+                            {/* TH */}
+                            <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 space-y-1">
+                              <div className="flex justify-between items-center text-[9px]">
+                                <span className="font-black text-emerald-400 uppercase">2. TH</span>
+                                <span className="text-slate-500 font-semibold">Kho:{tInfo.available.H}</span>
+                              </div>
+                              <input 
+                                type="number" 
+                                disabled={!isChecked}
+                                min="0"
+                                max={tInfo.available.H}
+                                value={smartConfig.customLevelTargets[typeKey]?.H ?? 0}
+                                onChange={e => updateSmartConfig({
+                                  customLevelTargets: {
+                                    ...smartConfig.customLevelTargets,
+                                    [typeKey]: { ...smartConfig.customLevelTargets[typeKey], H: parseInt(e.target.value) || 0 }
+                                  }
+                                })}
+                                className="w-full h-8 bg-slate-900 border border-slate-700/60 rounded-lg text-center text-xs font-black text-white outline-none focus:border-indigo-500"
+                              />
+                            </div>
 
-               <div className="bg-slate-950/50 p-8 rounded-[40px] border border-slate-800 space-y-6">
-                  <div className="flex items-center gap-3 text-indigo-400 font-black text-xs uppercase tracking-[0.2em]">
-                    <ShieldCheck size={20}/> NGUYÊN TẮC PHỦ DIỆN RỘNG (DẠNG & MỨC)
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
-                    <div className="p-6 bg-slate-900/80 rounded-3xl border border-slate-800 shadow-xl border-l-4 border-l-blue-500">
-                      <div className="text-sm font-black text-white uppercase mb-2">1. Tỉ lệ Mức độ 3:3:2:2</div>
-                      <div className="text-[11px] text-slate-500 leading-relaxed">Phân bổ chuẩn: 30% Nhận biết, 30% Thông hiểu, 20% Vận dụng, 20% Vận dụng cao trên tổng số câu yêu cầu.</div>
+                            {/* VD */}
+                            <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 space-y-1">
+                              <div className="flex justify-between items-center text-[9px]">
+                                <span className="font-black text-amber-400 uppercase">3. VD</span>
+                                <span className="text-slate-500 font-semibold">Kho:{tInfo.available.V}</span>
+                              </div>
+                              <input 
+                                type="number" 
+                                disabled={!isChecked}
+                                min="0"
+                                max={tInfo.available.V}
+                                value={smartConfig.customLevelTargets[typeKey]?.V ?? 0}
+                                onChange={e => updateSmartConfig({
+                                  customLevelTargets: {
+                                    ...smartConfig.customLevelTargets,
+                                    [typeKey]: { ...smartConfig.customLevelTargets[typeKey], V: parseInt(e.target.value) || 0 }
+                                  }
+                                })}
+                                className="w-full h-8 bg-slate-900 border border-slate-700/60 rounded-lg text-center text-xs font-black text-white outline-none focus:border-indigo-500"
+                              />
+                            </div>
+
+                            {/* VDC */}
+                            <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 space-y-1">
+                              <div className="flex justify-between items-center text-[9px]">
+                                <span className="font-black text-rose-400 uppercase">4. VDC</span>
+                                <span className="text-slate-500 font-semibold">Kho:{tInfo.available.C}</span>
+                              </div>
+                              <input 
+                                type="number" 
+                                disabled={!isChecked}
+                                min="0"
+                                max={tInfo.available.C}
+                                value={smartConfig.customLevelTargets[typeKey]?.C ?? 0}
+                                onChange={e => updateSmartConfig({
+                                  customLevelTargets: {
+                                    ...smartConfig.customLevelTargets,
+                                    [typeKey]: { ...smartConfig.customLevelTargets[typeKey], C: parseInt(e.target.value) || 0 }
+                                  }
+                                })}
+                                className="w-full h-8 bg-slate-900 border border-slate-700/60 rounded-lg text-center text-xs font-black text-white outline-none focus:border-indigo-500"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Sum label */}
+                          {isChecked && (
+                            <div className="text-[10px] font-black text-indigo-400 text-right pr-1">
+                              Tổng cộng: {(smartConfig.customLevelTargets[typeKey]?.N || 0) + (smartConfig.customLevelTargets[typeKey]?.H || 0) + (smartConfig.customLevelTargets[typeKey]?.V || 0) + (smartConfig.customLevelTargets[typeKey]?.C || 0)} câu
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div className="p-6 bg-slate-900/80 rounded-3xl border border-slate-800 shadow-xl border-l-4 border-l-indigo-500">
-                      <div className="text-sm font-black text-white uppercase mb-2">2. Quét đều Dạng bài (Form)</div>
-                      <div className="text-[11px] text-slate-500 leading-relaxed">Với mỗi mức độ, hệ thống bốc xoay vòng qua các ID Dạng khác nhau để đảm bảo đề thi không bị lặp lại một kiểu bài tập quá nhiều.</div>
-                    </div>
-                  </div>
-               </div>
+                  );
+                })}
+              </div>
+
+              {/* Form Coverage Guarantee Card */}
+              <div className="bg-slate-900/40 p-3 rounded-2xl border border-slate-800 flex items-center justify-between text-[11px] text-slate-300">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={18} className="text-emerald-400 flex-shrink-0" />
+                  <span>
+                    Bật thuật toán <strong className="text-white">Phủ đều dạng bài (Form)</strong>: Tự động bốc xoay vòng qua tất cả <strong className="text-indigo-400">{availableStats.totalForms.size} dạng bài</strong> có trong bài học.
+                  </span>
+                </div>
+                <span className="text-[9px] font-bold px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded border border-emerald-500/20 whitespace-nowrap">
+                  Ưu tiên phủ ≥ 2/3 dạng
+                </span>
+              </div>
+
             </div>
           )}
         </div>
 
-        <div className="p-8 border-t border-slate-700 flex justify-between items-center bg-slate-900/50">
-          <div className="text-[11px] text-slate-500 font-bold uppercase tracking-widest italic flex items-center gap-3">
-            <CheckCircle size={18} className="text-emerald-500"/>
-            Yêu cầu "Phủ Dạng & Tỉ lệ 3:3:2:2" là ưu tiên hàng đầu trong thuật toán bốc v3.0.
+        {/* Modal Footer */}
+        <div className="px-5 py-3.5 border-t border-slate-700/80 flex justify-between items-center bg-slate-800/80">
+          <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-2">
+            <CheckCircle size={16} className="text-emerald-500"/>
+            <span>Sẵn sàng bốc câu hỏi</span>
           </div>
-          <div className="flex gap-6 items-center">
-            <button onClick={onClose} className="text-[11px] font-black uppercase text-slate-400 hover:text-white tracking-widest transition-all">Hủy bỏ</button>
+          <div className="flex gap-3 items-center">
+            <button onClick={onClose} className="px-4 py-2 text-[11px] font-black uppercase text-slate-400 hover:text-white tracking-wider transition-all">
+              Hủy bỏ
+            </button>
             <button 
               onClick={activeTab === 'MATRIX' ? handleMatrixExecute : handleSmartExecute} 
-              className="px-16 py-6 bg-indigo-600 hover:bg-indigo-500 text-white rounded-[28px] text-xs font-black uppercase tracking-[0.1em] shadow-2xl shadow-indigo-900/40 active:scale-95 transition-all flex items-center gap-4"
+              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[11px] font-black uppercase tracking-wider shadow-lg shadow-indigo-900/30 active:scale-95 transition-all flex items-center gap-2"
             >
-              <Dices size={24}/>
-              {activeTab === 'MATRIX' ? 'Xác nhận bốc theo ma trận' : 'Thực hiện Bốc thông minh'}
+              <Dices size={18}/>
+              {activeTab === 'MATRIX' ? 'Bốc theo ma trận' : 'Bốc ngay'}
             </button>
           </div>
         </div>
+
       </div>
     </div>
   );
